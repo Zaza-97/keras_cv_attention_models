@@ -29,7 +29,7 @@ PRETRAINED_DICT = {
 
 def rep_conv_block(inputs, out_channel, kernel_size=3, strides=1, groups=1, deploy=False, name=""):
     input_channel = inputs.shape[-1 if image_data_format() == "channels_last" else 1]
-    use_depthwise = input_channel == out_channel and groups == out_channel
+    use_depthwise = input_channel == out_channel and groups == 1
     if deploy and use_depthwise:
         return depthwise_conv2d_no_bias(inputs, kernel_size=kernel_size, strides=strides, use_bias=True, padding="same", name=name + "REPARAM_1_")
     elif deploy:
@@ -44,14 +44,14 @@ def rep_conv_block(inputs, out_channel, kernel_size=3, strides=1, groups=1, depl
     if use_depthwise:
         dw_1 = depthwise_conv2d_no_bias(inputs, kernel_size=kernel_size, strides=strides, padding="same", name=name + "REPARAM_1_")
     else:
-        dw_1 = conv2d_no_bias(inputs, out_channel, kernel_size=kernel_size, strides=strides, padding="same", groups=groups, name=name + "REPARAM_1_")
+        dw_1 = conv2d_no_bias(inputs, out_channel, kernel_size=kernel_size, strides=strides, padding="same", groups=1, name=name + "REPARAM_1_")
     dw_1 = batchnorm_with_activation(dw_1, epsilon=BATCH_NORM_EPSILON, name=name + "REPARAM_1_")
 
     if kernel_size > 1:
         if use_depthwise:
             dw_2 = depthwise_conv2d_no_bias(inputs, 1, strides=strides, name=name + "REPARAM_2_")
         else:
-            dw_2 = conv2d_no_bias(inputs, out_channel, 1, strides=strides, groups=groups, name=name + "REPARAM_2_")
+            dw_2 = conv2d_no_bias(inputs, out_channel, 1, strides=strides, groups=1, name=name + "REPARAM_2_")
         dw_2 = batchnorm_with_activation(dw_2, epsilon=BATCH_NORM_EPSILON, name=name + "REPARAM_2_")
         out = layers.Add(name=name + "REPARAM_out")([dw_1, dw_2, short] if use_shortcut else [dw_1, dw_2])
     else:
@@ -62,11 +62,11 @@ def rep_conv_block(inputs, out_channel, kernel_size=3, strides=1, groups=1, depl
 def rep_downsample_block(inputs, out_channel, strides=2, deploy=False, name=""):
     input_channel = inputs.shape[-1 if image_data_format() == "channels_last" else 1]
     if deploy:
-        return conv2d_no_bias(inputs, out_channel, 7, strides=strides, use_bias=True, padding="same", groups=input_channel, name=name + "REPARAM_1_")
+        return conv2d_no_bias(inputs, out_channel, 7, strides=strides, use_bias=True, padding="same", groups=1, name=name + "REPARAM_1_")
 
-    dw_1 = conv2d_no_bias(inputs, out_channel, kernel_size=7, strides=strides, padding="same", groups=input_channel, name=name + "REPARAM_1_")
+    dw_1 = conv2d_no_bias(inputs, out_channel, kernel_size=7, strides=strides, padding="same", groups=1, name=name + "REPARAM_1_")
     dw_1 = batchnorm_with_activation(dw_1, epsilon=BATCH_NORM_EPSILON, name=name + "REPARAM_1_")
-    dw_2 = conv2d_no_bias(inputs, out_channel, kernel_size=3, strides=strides, padding="same", groups=input_channel, name=name + "REPARAM_2_")
+    dw_2 = conv2d_no_bias(inputs, out_channel, kernel_size=3, strides=strides, padding="same", groups=1, name=name + "REPARAM_2_")
     dw_2 = batchnorm_with_activation(dw_2, epsilon=BATCH_NORM_EPSILON, name=name + "REPARAM_2_")
     return layers.Add(name=name + "REPARAM_out")([dw_1, dw_2])
 
@@ -87,7 +87,7 @@ def mixer_mlp_block(inputs, out_channel, mlp_ratio=3, use_attn=False, kernel_siz
         mixer = multi_head_self_attention(mixer, num_heads=input_channel // 32, qkv_bias=False, out_bias=True, name=name + "attn_")
         mixer = mixer if image_data_format() == "channels_last" else layers.Permute([3, 1, 2])(mixer)
     else:
-        deep_mixer = rep_conv_block(inputs, out_channel, kernel_size=kernel_size, groups=out_channel, deploy=deploy, name=name + "mixer_")
+        deep_mixer = rep_conv_block(inputs, out_channel, kernel_size=kernel_size, groups=1, deploy=deploy, name=name + "mixer_")
         mixer = deep_mixer if deploy else layers.Subtract(name=name + "REPARAM_TWICE_out")([deep_mixer, norm_mixer])
 
     if use_attn or not deploy:
@@ -95,7 +95,7 @@ def mixer_mlp_block(inputs, out_channel, mlp_ratio=3, use_attn=False, kernel_siz
         mixer = drop_block(mixer, drop_rate=drop_rate, name=name + "1_")
         mixer = layers.Add(name=name + ("1_out" if use_attn else "REPARAM_THIRD_out"))([mixer, inputs])
 
-    mlp = conv2d_no_bias(mixer, out_channel, kernel_size=7, strides=1, use_bias=deploy, padding="same", groups=input_channel, name=name + "mlp_pre_")
+    mlp = conv2d_no_bias(mixer, out_channel, kernel_size=7, strides=1, use_bias=deploy, padding="same", groups=1, name=name + "mlp_pre_")
     mlp = mlp if deploy else batchnorm_with_activation(mlp, epsilon=BATCH_NORM_EPSILON, activation=None, name=name + "mlp_pre_")
     mlp = mlp_block(mlp, int(out_channel * mlp_ratio), use_conv=True, activation=activation, name=name + "mlp_")
 
@@ -129,7 +129,7 @@ def FastViT(
     stem_width = stem_width if stem_width > 0 else out_channels[0]
     nn = rep_conv_block(inputs, stem_width, kernel_size=3, strides=2, deploy=deploy, name="stem_1_")
     nn = activation_by_name(nn, activation=activation, name="stem_1_")
-    nn = rep_conv_block(nn, stem_width, kernel_size=3, strides=2, groups=stem_width, deploy=deploy, name="stem_2_")
+    nn = rep_conv_block(nn, stem_width, kernel_size=3, strides=2, groups=1, deploy=deploy, name="stem_2_")
     nn = activation_by_name(nn, activation=activation, name="stem_2_")
     nn = rep_conv_block(nn, stem_width, kernel_size=1, strides=1, deploy=deploy, name="stem_3_")
     nn = activation_by_name(nn, activation=activation, name="stem_3_")
@@ -142,7 +142,7 @@ def FastViT(
         use_attn = False if block_type[0].lower() == "c" else True
         if stack_id > 0:
             nn = rep_downsample_block(nn, out_channel, deploy=deploy, name=stack_name + "downsample_")  # [???] activation is ignored
-            nn = rep_conv_block(nn, out_channel, kernel_size=1, deploy=deploy, name=stack_name + "downsample_2_")
+            nn = rep_conv_block(nn, out_channel, groups=1, kernel_size=1, deploy=deploy, name=stack_name + "downsample_2_")
             nn = activation_by_name(nn, activation=activation, name=stack_name + "downsample_")
 
         if use_attn:
@@ -157,7 +157,7 @@ def FastViT(
             )
 
     if num_classes > 0:
-        nn = rep_conv_block(nn, out_channels[-1] * 2, kernel_size=3, strides=1, groups=out_channels[-1], deploy=deploy, name="features_")
+        nn = rep_conv_block(nn, out_channels[-1] * 2, kernel_size=3, strides=1, groups=1, deploy=deploy, name="features_")
         nn = se_module(nn, se_ratio=0.0625, divisor=1, activation="relu", name="features_se_")
         nn = activation_by_name(nn, activation=activation, name="features_")
 
